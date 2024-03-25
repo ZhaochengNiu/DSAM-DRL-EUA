@@ -6,17 +6,30 @@ from nets.graph_encoder import GraphAttentionEncoder
 
 
 class UserEncoder(nn.Module):
+    # input_dim: 输入特征的维度。
+    # hidden_dim: 隐藏层的维度，即神经网络中间层的神经元数量。
+    # n_heads: 注意力头的数量，默认为 8。
+    # n_layers: 注意力层的数量，默认为 6。
+    # normalization: 规范化方式，默认为批次规范化。
+    # feed_forward_hidden: 前馈神经网络隐藏层的维度，默认为 512。
+    # embedding_type: 嵌入类型，指定了用户特征的编码方式，默认为 "transformer"。
     def __init__(self, input_dim, hidden_dim, n_heads=8, n_layers=6,
                  normalization='batch', feed_forward_hidden=512, embedding_type='transformer'):
         super(UserEncoder, self).__init__()
+        # 设置嵌入类型。
         self.embedding_type = embedding_type
+        # 如果嵌入类型是 "transformer"，
+        # 则创建一个名为 GraphAttentionEncoder 的实例，表示采用图注意力编码器来对用户特征进行编码。
         if embedding_type == 'transformer':
             self.embedding = GraphAttentionEncoder(n_heads, hidden_dim, n_layers,
                                                    input_dim, normalization, feed_forward_hidden)
+        # 如果嵌入类型是 "linear"，则创建一个线性层，用于线性变换用户特征的维度。
         elif embedding_type == 'linear':
             self.embedding = nn.Linear(input_dim, hidden_dim)
+        # 如果嵌入类型是 "lstm"，则创建一个 LSTM 层，用于对序列特征进行编码。
         elif embedding_type == 'lstm':
             self.embedding = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, batch_first=True)
+        # 否则，直接使用相应的嵌入层对输入进行编码，并返回编码后的结果。
         else:
             raise NotImplementedError
 
@@ -29,42 +42,64 @@ class UserEncoder(nn.Module):
 
 
 class ServerEncoder(nn.Module):
+    # input_dim：输入特征的维度。
+    # hidden_dim：隐藏层的维度。
+    # n_heads：多头注意力中注意头的数量，默认为 8。
+    # n_layers：Transformer 层的数量，默认为 6。
+    # normalization：归一化方法，默认为 'batch'。
+    # feed_forward_hidden：前馈神经网络中隐藏层的大小，默认为 512。
+    # embedding_type：嵌入类型，可以是 'transformer' 或 'linear'。
     def __init__(self, input_dim, hidden_dim, n_heads=8, n_layers=6,
                  normalization='batch', feed_forward_hidden=512, embedding_type='linear'):
         super(ServerEncoder, self).__init__()
+        # 将嵌入类型存储在实例变量 embedding_type 中。
         self.embedding_type = embedding_type
+        # 根据嵌入类型选择不同的编码方式。
+        # 如果嵌入类型为 'transformer'，则使用 GraphAttentionEncoder 进行编码。
+        # 如果嵌入类型为 'linear'，则使用线性层进行编码。
+        # 根据嵌入类型选择相应的编码器。
+        # 如果是 'transformer'，则创建一个 GraphAttentionEncoder 实例；如果是 'linear'，则创建一个线性层。
         if embedding_type == 'transformer':
             self.embedding = GraphAttentionEncoder(n_heads, hidden_dim, n_layers,
                                                    input_dim, normalization, feed_forward_hidden)
         elif embedding_type == 'linear':
             self.embedding = nn.Linear(input_dim, hidden_dim)
         else:
+            # 如果嵌入类型不是 'transformer' 或 'linear'，则抛出 NotImplementedError。
             raise NotImplementedError
 
     def forward(self, inputs):
+        # 根据选择的编码器类型，对输入张量进行编码并返回结果。
         return self.embedding(inputs)
 
 
 class Glimpse(nn.Module):
+    # Glimpse 的模块，用于在查询和参考（参考序列）之间进行注意力机制。下面是逐行解释：
     # input :
     # query:    batch_size * 1 * query_input_dim
     # ref:      batch_size * seq_len * ref_hidden_dim
     def __init__(self, hidden_dim):
         super(Glimpse, self).__init__()
+        # 使用线性层初始化查询、参考键和参考值的线性转换。这些线性层用于将输入的隐藏维度映射到相同的隐藏维度。
         self.q = nn.Linear(hidden_dim, hidden_dim)
         self.k = nn.Linear(hidden_dim, hidden_dim)
         self.v = nn.Linear(hidden_dim, hidden_dim)
+        # 用于归一化注意力分数的归一化因子。
         self._norm_fact = 1 / math.sqrt(hidden_dim)
 
     def forward(self, query, ref):
+        # 分别将查询、参考键和参考值通过线性层进行转换，以便在相同的隐藏维度上进行计算。
         Q = self.q(query)  # Q: batch_size * 1 * hidden_dim
         K = self.k(ref)  # K: batch_size * seq_len * hidden_dim
         V = self.v(ref)  # V: batch_size * seq_len * hidden_dim
-
+        # 计算查询和参考之间的点积注意力分数。
+        # 这里使用了批量矩阵乘法（torch.bmm），并且为了进行矩阵乘法，需要将参考键进行转置以与查询相匹配。
         attn_score = torch.bmm(Q, K.permute(0, 2, 1))
+        # 使用归一化因子对注意力分数进行归一化，以防止数值过大。
         attn_score = attn_score * self._norm_fact
+        # 将归一化后的注意力分数通过 softmax 函数进行归一化，以得到查询与参考之间的注意力分布。
         attn = torch.softmax(attn_score, dim=-1)    # Q * K.T() # batch_size * 1 * seq_len
-
+        # 使用注意力分布对参考值进行加权平均，得到最终的输出。这里同样使用了批量矩阵乘法，将注意力分布乘以参考值。
         output = torch.bmm(attn, V)  # Q * K.T() * V # batch_size * 1 * hidden_dim
         # 混合了所有服务器的相似度的一个表示服务器的变量
         return output
@@ -103,21 +138,39 @@ class AttentionNet(nn.Module):
                  transformer_n_heads=8, transformer_n_layers=3, transformer_feed_forward_hidden=512,
                  user_scale_alpha=0.05, beam_num=1, ):
         super(AttentionNet, self).__init__()
+        # user_input_dim: 用户输入特征的维度。
+        # server_input_dim: 服务器输入特征的维度。
+        # hidden_dim: 隐藏层的维度，即神经网络中间层的神经元数量。
+        # device: 指定模型所在的设备，可以是 GPU 或 CPU。
+        # capacity_reward_rate: 容量奖励率，用于奖励模型在任务中实现更高容量的能力。
+        # exploration_c: 探索系数，用于控制模型在训练过程中的探索能力，默认值为 10。
+        # policy: 策略，控制模型的行为策略，默认为 "sample"。
+        # user_embedding_type: 用户嵌入类型，用于指定如何对用户进行嵌入表示，默认为 "transformer"。
+        # server_embedding_type: 服务器嵌入类型，用于指定如何对服务器进行嵌入表示，默认为 "linear"。
+        # transformer_n_heads: Transformer 模型中注意力头的数量，默认为 8。
+        # transformer_n_layers: Transformer 模型中注意力层的数量，默认为 3。
+        # transformer_feed_forward_hidden: Transformer 模型中前馈神经网络隐藏层的维度，默认为 512。
+        # user_scale_alpha: 用户尺度参数 α，用于缩放用户特征的参数，默认值为 0.05。
+        # beam_num: 光束搜索的数量，默认为 1。
         # decoder hidden size
+        # 设置隐藏层维度和设备。
         self.hidden_dim = hidden_dim
         self.device = device
-
+        # 创建用户编码器，根据给定的参数创建一个 UserEncoder 类的实例，并将其放置到指定的设备上。
         self.user_encoder = UserEncoder(user_input_dim, hidden_dim, n_heads=transformer_n_heads,
                                         n_layers=transformer_n_layers,
                                         feed_forward_hidden=transformer_feed_forward_hidden,
                                         embedding_type=user_embedding_type).to(device)
+        # 创建服务器编码器，根据给定的参数创建一个 ServerEncoder 类的实例，并将其放置到指定的设备上。
         self.server_encoder = ServerEncoder(server_input_dim + 1, hidden_dim, n_heads=transformer_n_heads,
                                             n_layers=transformer_n_layers,
                                             feed_forward_hidden=transformer_feed_forward_hidden,
                                             embedding_type=server_embedding_type).to(device)
-
+        # 创建关注机制模块，根据给定的参数创建一个 Glimpse 类的实例，并将其放置到指定的设备上。
         # glimpse输入（用户，上次选择的服务器），维度为2*dim， 跟所有的服务器作相似度并输出融合后的服务器
         self.glimpse = Glimpse(hidden_dim).to(device)
+        # 创建注意力机制模块，根据给定的参数创建一个 Attention 类的实例，并将其放置到指定的设备上。
+        # 设置模型的容量奖励率、策略和光束搜索数量。
         self.pointer = Attention(hidden_dim, exploration_c, user_scale_alpha).to(device)
         self.capacity_reward_rate = capacity_reward_rate
         self.policy = policy
@@ -410,24 +463,35 @@ def can_allocate(workload: torch.Tensor, capacity: torch.Tensor):
 
 
 class CriticNet(nn.Module):
+    # 初始化方法，接受用户输入维度 user_input_dim、服务器输入维度 server_input_dim、
+    # 隐藏层维度 hidden_dim、设备 device，以及用户和服务器的嵌入类型等参数。
     def __init__(self, user_input_dim, server_input_dim, hidden_dim, device,
                  user_embedding_type='linear', server_embedding_type='linear'):
         super(CriticNet, self).__init__()
+        # 将输入的隐藏层维度和设备信息存储在对象属性中。
         self.hidden_dim = hidden_dim
         self.device = device
-
+        # 创建用户编码器和服务器编码器对象。这些编码器用于将用户输入和服务器输入映射到隐藏空间。
         self.user_encoder = UserEncoder(user_input_dim, hidden_dim,
                                         embedding_type=user_embedding_type).to(device)
         self.server_encoder = ServerEncoder(server_input_dim, hidden_dim,
                                             embedding_type=server_embedding_type).to(device)
+        # 建一个线性层，用于将用户编码和服务器编码进行融合。
+        # 输入维度是隐藏维度的两倍（因为用户编码和服务器编码都是隐藏维度），
+        # 输出维度是隐藏维度。这里的 device=device 参数用于指定线性层所在的设备。
         self.fusion = nn.Linear(hidden_dim * 2, hidden_dim, device=device)
+        # 创建一个线性层，用于将融合后的编码映射到单个值（评分或者价值）。
+        # 输入维度是隐藏维度，输出维度是1，因为这是一个回归任务。
+        # 同样使用了 device=device 参数指定线性层所在的设备。
         self.out = nn.Linear(hidden_dim, 1, device=device)
 
     def forward(self, user_input_seq, server_input_seq):
+        # 分别将用户输入序列和服务器输入序列通过对应的编码器进行编码，得到用户编码和服务器编码。
         user_code = self.user_encoder(user_input_seq)
         user_all = torch.mean(user_code, dim=1)
-
+        # 对编码后的用户和服务器特征进行平均池化，得到用户和服务器的整体特征表示。
         server_code = self.server_encoder(server_input_seq)
         server_all = torch.mean(server_code, dim=1)
-
+        # 将用户和服务器的整体特征连接起来，通过融合层和输出层进行计算，
+        # 得到最终的输出。最后使用 squeeze(-1) 将输出的最后一个维度压缩，以获得一维的输出。
         return self.out(self.fusion(torch.cat([user_all, server_all], dim=-1))).squeeze(-1)

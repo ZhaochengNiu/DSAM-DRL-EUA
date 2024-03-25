@@ -15,13 +15,24 @@ from data.eua_dataset import get_dataset
 
 
 def train(config):
+    # 这一行调用了一个函数 seed_torch()，它可能被用来设置 PyTorch 的随机种子，以确保实验的可重复性。
     seed_torch()
+    # 这一行从一个名为 config 的配置文件中获取了三个部分的配置信息：train、data 和 model。
+    # 这些配置信息可能包括训练过程的参数、数据集的参数以及模型的参数。
     train_config, data_config, model_config = config['train'], config['data'], config['model']
+    # 这一行根据是否有可用的 CUDA（即 GPU 是否可用）来确定程序运行的设备。
+    # 如果 CUDA 可用，就选择 GPU 作为设备，否则选择 CPU。
     device = train_config['device'] if torch.cuda.is_available() else 'cpu'
+    # 这一行打印出程序最终选择的设备，以便用户知道程序将在哪个设备上运行
     print('Using device: {}'.format(device))
+    # 这一行调用了 get_dataset 函数，并传递了一系列参数来生成数据集。
+    # 这个函数可能会根据提供的参数生成数据集，然后对数据进行一些预处理。
     dataset = get_dataset(data_config['x_end'], data_config['y_end'], data_config['miu'], data_config['sigma'],
                           data_config['user_num'], data_config['data_size'],
                           data_config['min_cov'], data_config['max_cov'], device, train_config['dir_name'])
+    # 这几行分别创建了训练数据加载器、验证数据加载器和测试数据加载器，用于按批次加载相应的数据集。
+    # 这些加载器将在模型训练和评估过程中使用。其中，batch_size 参数指定了每个批次中样本的数量，
+    # shuffle 参数表示是否在每个 epoch 开始时对数据进行洗牌以增加随机性。
     train_loader = DataLoader(dataset=dataset['train'], batch_size=train_config['batch_size'], shuffle=True)
     valid_loader = DataLoader(dataset=dataset['valid'], batch_size=train_config['batch_size'], shuffle=False)
     test_loader = DataLoader(dataset=dataset['test'], batch_size=train_config['batch_size'], shuffle=False)
@@ -35,8 +46,12 @@ def train(config):
                          transformer_n_layers=model_config['transformer_n_layers'],
                          transformer_feed_forward_hidden=model_config['transformer_feed_forward_hidden'],
                          user_scale_alpha=model_config['user_scale_alpha'])
+    # 使用 Adam 优化器来优化主模型 model 的参数，学习率为配置文件中指定的学习率 train_config['lr']。
     optimizer = Adam(model.parameters(), lr=train_config['lr'])
+    # 获取训练类型，这个训练类型通常在配置文件中指定。
     original_train_type = train_config['train_type']
+    # 根据原始的训练类型，将其赋值给 now_train_type，
+    # 如果原始的训练类型是 'RGRB-BL'，则将 now_train_type 设置为 'REINFORCE'，否则保持原始的训练类型。
     if original_train_type == 'RGRB-BL':
         now_train_type = 'REINFORCE'
     else:
@@ -378,5 +393,8 @@ def train(config):
 
 if __name__ == '__main__':
     with open('config.yaml', 'r') as f:
+        # 在这里，打开名为config.yaml的文件，模式为只读模式('r')，并且使用yaml.safe_load()方法加载其中的内容。
+        # 加载后的配置将会被存储在loaded_config变量中。
         loaded_config = yaml.safe_load(f)
+
     train(loaded_config)
