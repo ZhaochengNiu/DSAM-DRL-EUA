@@ -56,14 +56,20 @@ def train(config):
         now_train_type = 'REINFORCE'
     else:
         now_train_type = original_train_type
+    # 初始化变量 critic_model、critic_optimizer、critic_lr_scheduler 和 model_bl，并将它们都设置为 None。
     critic_model = None
     critic_optimizer = None
     critic_lr_scheduler = None
     model_bl = None
+    # 如果 now_train_type 是 'ac'（Actor-Critic 训练），则：
     if now_train_type == 'ac':
+        # 创建一个评论者网络 critic_model，其输入维度为用户和服务器的特征维度，
+        # 隐藏层维度为 256，并且将用户和服务器的嵌入类型从模型配置文件中获取。
         critic_model = CriticNet(6, 7, 256, device, model['user_embedding_type'], model['server_embedding_type'])
+        # 使用 Adam 优化器来优化评论者网络的参数，学习率与主模型相同。
         critic_optimizer = Adam(critic_model.parameters(), lr=train_config['lr'])
     elif original_train_type == 'RGRB-BL':
+        # 根据配置文件中的参数创建一个辅助模型 model_bl，这个模型在特定的训练类型下被使用。
         model_bl = AttentionNet(6, 7, hidden_dim=model_config['hidden_dim'], device=device,
                                 exploration_c=model_config['exploration_c'],
                                 capacity_reward_rate=model_config['capacity_reward_rate'],
@@ -75,46 +81,65 @@ def train(config):
                                 user_scale_alpha=model_config['user_scale_alpha'])
 
     # 加载需要继续训练或微调的模型
+    # 检查模型配置中是否需要继续训练。如果是，则执行下面的代码块，否则跳到 else 语句。
     if model_config['need_continue']:
+        # 从指定路径加载之前保存的模型参数、优化器状态等信息，
         checkpoint = torch.load(model_config['continue_model_filename'], map_location='cpu')
+        # 加载之前训练模型的参数到当前模型中。
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
+        # 检查是否需要调整学习率。
         if model_config['continue_lr'] != 0:
+            # 遍历优化器的参数组。
             for param_group in optimizer.param_groups:
+                # 将每个参数组的学习率设置为配置文件中指定的继续学习率。
                 param_group['lr'] = model_config['continue_lr']
+        # 获取之前训练模型的最后一个 epoch，并将起始 epoch 设置为其后一个 epoch，用于继续训练。
         start_epoch = checkpoint['epoch'] + 1
-
+        # 如果当前训练类型是 'ac'，则：
         if now_train_type == 'ac':
+            # 加载之前训练的评论者网络参数。
             critic_model.load_state_dict(checkpoint['critic_model'])
+            # 加载之前保存的评论者网络优化器状态。
             critic_optimizer.load_state_dict(checkpoint['critic_optimizer'])
         elif original_train_type == 'RGRB-BL':
+            # 将当前训练类型设置为 'RGRB-BL'
             now_train_type = 'RGRB-BL'
+            # 加载之前训练的辅助模型参数。
             model_bl.load_state_dict(checkpoint['model_bl'])
 
         print("成功导入预训练模型")
     else:
+        # 如果不需要继续训练，则将起始 epoch 设置为 0。
         start_epoch = 0
-
+    # 创建学习率衰减器，用指数衰减方式调整学习率，train_config['lr_decay']是衰减率，
+    # last_epoch=start_epoch - 1表示上一个 epoch 的索引。
     # 每轮乘lr_decay
     lr_scheduler = ExponentialLR(optimizer, train_config['lr_decay'], last_epoch=start_epoch - 1)
     print("当前学习率：", lr_scheduler.get_last_lr())
+    # 如果当前训练类型是 'ac'，则创建评论者网络优化器的学习率衰减器
     if now_train_type == 'ac':
         critic_lr_scheduler = ExponentialLR(critic_optimizer, train_config['lr_decay'], last_epoch=start_epoch - 1)
-
+    # 初始化评论者网络的指数移动平均值为零向量。
     critic_exp_mvg_avg = torch.zeros(1, device=device)
-
+    # 生成保存训练过程中生成的日志和模型的目录名称，包括当前日期、用户数量、服务器数量等信息。
     dir_name = "" + time.strftime('%m%d%H%M', time.localtime(time.time())) \
                + "_server_" + str(data_config['x_end']) + "_" + str(data_config['y_end']) \
                + "_user_" + str(data_config['user_num']) \
                + "_miu_" + str(data_config['miu']) + "_sigma_" + str(data_config['sigma']) \
                + "_" + model_config['user_embedding_type'] + "_" + model_config['server_embedding_type'] \
                + "_" + original_train_type + "_capa_rate_" + str(model_config['capacity_reward_rate'])
+    # 将目录名与根目录组合成完整的保存路径。
     dir_name = os.path.join(train_config['dir_name'], dir_name)
+    # 设置日志文件的完整路径和名称。
     log_file_name = dir_name + '/log.log'
-
+    # 创建保存训练过程中生成的日志和模型的目录，如果目录已存在则忽略。
     os.makedirs(dir_name, exist_ok=True)
+    # 创建 TensorBoard 的 SummaryWriter，用于记录训练过程中的指标和可视化数据。
     tensorboard_writer = SummaryWriter(dir_name)
+    # 获取记录日志的 logger。
     logger = get_logger(log_file_name)
+    # 设置标志位表示当前不退出程序。
     now_exit = False
 
     start_time = time.time()
@@ -127,18 +152,22 @@ def train(config):
     total_batch_num = 0
     for epoch in range(start_epoch, train_config['epochs']):
         # Train
+        # 将模型设置为训练模式，这会启用训练相关的功能，如 dropout 和 batch normalization。
         model.train()
+        # 这里设置了模型的策略为采样模式，并将 beam_num 设置为 1。
         model.policy = 'sample'
         model.beam_num = 1
+        # 使用 enumerate(train_loader) 遍历训练数据集的每个 batch，并获取 server_seq、user_seq 和 masks。
         for batch_idx, (server_seq, user_seq, masks) in enumerate(train_loader):
+            # 将获取的数据转移到指定的设备上，通常是 GPU。
             server_seq, user_seq, masks = server_seq.to(device), user_seq.to(device), masks.to(device)
-
+            # 使用模型进行推断，获取奖励、动作概率等信息。
             reward, actions_probs, _, user_allocated_props, server_used_props, capacity_used_props, _ \
                 = model(user_seq, server_seq, masks)
-
+            # 使用 TensorBoard 记录训练过程中的奖励和其他指标。
             tensorboard_writer.add_scalar('train/train_batch_reward', -torch.mean(reward), total_batch_num)
             total_batch_num += 1
-
+            # 根据不同的训练类型，计算优势（advantage）。
             if now_train_type == 'REINFORCE':
                 if batch_idx == 0:
                     critic_exp_mvg_avg = reward.mean()
@@ -179,11 +208,11 @@ def train(config):
 
             reinforce = torch.dot(advantage.detach(), log_probs)
             actor_loss = reinforce.mean()
-
+            # 使用反向传播计算策略梯度，并根据优化器更新模型参数。
             optimizer.zero_grad()
             actor_loss.backward()
             optimizer.step()
-
+            # 使用 logger 记录训练过程中的信息，如当前 epoch、训练进度、奖励以及其他指标的均值。
             if batch_idx % int(1024 / train_config['batch_size']) == 0:
                 logger.info(
                     'Epoch {}: Train [{}/{} ({:.1f}%)]\tR:{:.6f}\tuser_props: {:.6f}'
@@ -196,30 +225,47 @@ def train(config):
                         torch.mean(user_allocated_props),
                         torch.mean(server_used_props),
                         torch.mean(capacity_used_props)))
-
+        # 记录训练过程中的奖励（reward），取负号表示平均负奖励（因为通常优化目标是最大化奖励，
+        # 但这里的奖励可能是成本，所以取负号表示最小化成本）。
+        # 将均值 -torch.mean(reward) 记录到名为 'train/train_reward' 的标量中。
+        # epoch 参数表示当前的训练 epoch，用于在 TensorBoard 中将不同 epoch 的数据进行对比和分析。
         tensorboard_writer.add_scalar('train/train_reward', -torch.mean(reward), epoch)
+        # 记录训练过程中用户资源分配比例（user_allocated_props）的平均值。
+        # 将平均值 torch.mean(user_allocated_props) 记录到名为 'train/train_user_allocated_props' 的标量中。
         tensorboard_writer.add_scalar('train/train_user_allocated_props', torch.mean(user_allocated_props), epoch)
+        # 记录训练过程中服务器资源利用比例（server_used_props）的平均值。
+        # 将平均值 torch.mean(server_used_props) 记录到名为 'train/train_server_used_props' 的标量中。
         tensorboard_writer.add_scalar('train/train_server_used_props', torch.mean(server_used_props), epoch)
+        # 记录训练过程中容量利用比例（capacity_used_props）的平均值。
+        # 将平均值 torch.mean(capacity_used_props) 记录到名为 'train/train_capacity_used_props' 的标量中。
         tensorboard_writer.add_scalar('train/train_capacity_used_props', torch.mean(capacity_used_props), epoch)
 
         # Valid and Test
+        # 将模型设置为评估模式。
         model.eval()
+        # 设置模型的策略为“贪婪”。
         model.policy = 'greedy'
+        # 记录一条空白日志消息，用于分隔不同阶段的输出。
         logger.info('')
+        # 在评估阶段不需要进行梯度计算，因此使用 torch.no_grad() 上下文管理器来禁用梯度计算。
         with torch.no_grad():
             # Validation
+            # 初始化用于存储验证集结果的列表。
             valid_R_list = []
             valid_user_allocated_props_list = []
             valid_server_used_props_list = []
             valid_capacity_used_props_list = []
+            # 设置模型的策略为“贪婪”，并设置束搜索的数量为 1。
             model.policy = 'greedy'
             model.beam_num = 1
+            # 遍历验证集数据加载器，逐个获取批次数据。
             for batch_idx, (server_seq, user_seq, masks) in enumerate(valid_loader):
+                # 将服务器序列、用户序列和掩码转移到指定的设备上。
                 server_seq, user_seq, masks = server_seq.to(device), user_seq.to(device), masks.to(device)
-
+                # 通过模型计算验证集上的奖励和其他指标，如用户分配比例、服务器使用比例和容量使用比例。
                 reward, _, _, user_allocated_props, server_used_props, capacity_used_props, _ \
                     = model(user_seq, server_seq, masks)
-
+                # 记录验证集每个批次的性能指标，包括平均奖励、用户分配比例、服务器使用比例和容量使用比例。
                 if batch_idx % int(1024 / train_config['batch_size']) == 0:
                     logger.info(
                         'Epoch {}: Valid [{}/{} ({:.1f}%)]\tR:{:.6f}\tuser_props: {:.6f}'
@@ -238,7 +284,11 @@ def train(config):
                 valid_user_allocated_props_list.append(user_allocated_props)
                 valid_server_used_props_list.append(server_used_props)
                 valid_capacity_used_props_list.append(capacity_used_props)
-
+            # 这段代码将每个批次的验证集结果列表拼接成一个整体的张量。
+            # valid_R_list 包含每个批次的验证集奖励，
+            # valid_user_allocated_props_list 包含每个批次的用户分配比例，
+            # valid_server_used_props_list 包含每个批次的服务器使用比例，
+            # valid_capacity_used_props_list 包含每个批次的容量使用比例。
             valid_R_list = torch.cat(valid_R_list)
             valid_user_allocated_props_list = torch.cat(valid_user_allocated_props_list)
             valid_server_used_props_list = torch.cat(valid_server_used_props_list)
@@ -261,38 +311,49 @@ def train(config):
             all_valid_capacity_list.append(valid_capacity_use)
 
             # 每次遇到更好的reward就保存一次模型，并且更新model_bl
+            # 这段代码检查当前验证集的平均奖励是否比历史最佳奖励还要好。如果是，则执行以下操作。
             if valid_r < best_r:
+                # 更新最佳奖励值 best_r、最佳轮次 best_epoch_id 和最佳时间 best_time。
                 best_r = valid_r
                 best_epoch_id = epoch
                 best_time = 0
+                # 记录日志，表示当前验证集奖励是历史最佳奖励。
                 logger.info("目前本次reward最好\n")
+                # 生成模型文件名，包含了当前时间以及相关的验证集指标信息。
                 model_filename = dir_name + "/" + time.strftime(
                     '%m%d%H%M', time.localtime(time.time())
                 ) + "_{:.2f}_{:.2f}_{:.2f}".format(all_valid_user_list[best_epoch_id - start_epoch] * 100,
                                                    all_valid_server_list[best_epoch_id - start_epoch] * 100,
                                                    all_valid_capacity_list[best_epoch_id - start_epoch] * 100) + '.mdl'
+                # 保存当前模型到文件中，并记录日志。
                 torch.save(model.state_dict(), model_filename)
                 logger.info("模型已存储到: {}".format(model_filename))
+                # 如果使用了基线模型更新策略（RGRB-BL），则加载最新保存的模型文件到 model_bl 中，并记录日志。
                 if original_train_type == "RGRB-BL":
                     # 从文件复制回来，保证是深拷贝
                     state_checkpoint = torch.load(model_filename, map_location='cpu')
                     model_bl.load_state_dict(state_checkpoint)
                     logger.info("baseline已更新")
             else:
+                # 如果当前验证集的奖励没有比历史最佳奖励更好，则增加记录无进展的轮次 best_time，并记录日志。
                 best_time += 1
                 logger.info("已经有{}轮效果没变好了\n".format(best_time))
 
             # Test
+            # 测试阶段的代码开始。
+            # 初始化存储测试集结果的列表。
             test_R_list = []
             test_user_allocated_props_list = []
             test_server_used_props_list = []
             test_capacity_used_props_list = []
+            # 对测试数据加载器进行迭代，获取每个批次的服务器序列、用户序列和掩码。
             for batch_idx, (server_seq, user_seq, masks) in enumerate(test_loader):
+                # 将数据移到指定的设备上进行计算。
                 server_seq, user_seq, masks = server_seq.to(device), user_seq.to(device), masks.to(device)
-
+                # 利用模型计算测试集上的奖励以及相关属性。
                 reward, _, _, user_allocated_props, server_used_props, capacity_used_props, _ \
                     = model(user_seq, server_seq, masks)
-
+                # 在每个批次开始时记录测试集的奖励以及相关属性的平均值。
                 if batch_idx % int(1024 / train_config['batch_size']) == 0:
                     logger.info(
                         'Epoch {}: Test [{}/{} ({:.1f}%)]\tR:{:.6f}\tuser_props: {:.6f}'
@@ -306,7 +367,7 @@ def train(config):
                             torch.mean(server_used_props),
                             torch.mean(capacity_used_props)
                         ))
-
+                # 将当前批次的测试结果添加到相应的列表中。
                 test_R_list.append(reward)
                 test_user_allocated_props_list.append(user_allocated_props)
                 test_server_used_props_list.append(server_used_props)
@@ -338,9 +399,13 @@ def train(config):
             now_exit = True
 
         # 学习率衰减
+        # 调用 lr_scheduler 对象的 step 方法，对优化器中的学习率进行衰减。
         lr_scheduler.step()
+        # 如果当前的训练类型是 'ac'（Actor-Critic），则对评论家网络的学习率进行衰减，
+        # 即调用 critic_lr_scheduler 对象的 step 方法。
         if now_train_type == 'ac':
             critic_lr_scheduler.step()
+        # 记录学习率调整后的值。
         logger.info("学习率调整为：{}".format(optimizer.state_dict()['param_groups'][0]['lr']))
 
         # 每interval个epoch，或者即将退出的时候，保存一次可继续训练的模型：
